@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Task - Todo App{% endblock %}
+
+{% block content %}
+<h1>Edit Task</h1>
+
+<form method="POST" id="edit-form">
+    <div class="form-group">
+        <label for="task">Task:</label>
+        <input type="text" id="task" name="task" value="{{ todo.task }}" required maxlength="200">
+    </div>
+
+    <div class="form-group">
+        <label for="priority">Priority:</label>
+        <select id="priority" name="priority">
+            <option value="low" {% if todo.priority=='low' %}selected{% endif %}>Low</option>
+            <option value="medium" {% if todo.priority=='medium' %}selected{% endif %}>Medium</option>
+            <option value="high" {% if todo.priority=='high' %}selected{% endif %}>High</option>
+        </select>
+    </div>
+
+    <button type="submit" class="btn" id="save-btn">Save Changes</button>
+    <a href="/" class="btn btn-secondary">Cancel</a>
+</form>
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Statistics - Todo App{% endblock %}
+
+{% block content %}
+<h1>Todo Statistics</h1>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-number" id="total-tasks">{{ total }}</div>
+        <div class="stat-label">Total Tasks</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-number" id="completed-tasks">{{ completed }}</div>
+        <div class="stat-label">Completed</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-number" id="pending-tasks">{{ pending }}</div>
+        <div class="stat-label">Pending</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-number" id="completion-rate">
+            {% if total > 0 %}{{ "%.1f"|format((completed / total) * 100) }}%{% else %}0%{% endif %}
+        </div>
+        <div class="stat-label">Completion Rate</div>
+    </div>
+</div>
+
+{% if priority_stats %}
+<h2>Tasks by Priority</h2>
+{% for stat in priority_stats %}
+<div class="todo-item">
+    <span class="priority priority-{{ stat.priority }}">{{ stat.priority.upper() }}</span>
+    <strong>{{ stat.count }} task{{ 's' if stat.count != 1 else '' }}</strong>
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}
