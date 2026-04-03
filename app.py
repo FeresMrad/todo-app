@@ -1,10 +1,22 @@
-import sqlite3
 import os
-from datetime import datetime
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+import sqlite3
+from contextlib import contextmanager
+from typing import Literal
 
-app = Flask(__name__)
-app.secret_key = 'testing'
+from fastapi import FastAPI, Request, Form, HTTPException
+from fastapi.responses import RedirectResponse
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
+from starlette.middleware.sessions import SessionMiddleware
+
+app = FastAPI()
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.environ.get("SECRET_KEY", os.urandom(32).hex()),
+)
+
+templates = Jinja2Templates(directory="templates")
+
 
 # Database setup
 
@@ -30,193 +42,243 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
+
+@contextmanager
+def get_db():
+    conn = get_db_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@app.on_event("startup")
+def startup():
+    init_db()
+
+
+VALID_PRIORITIES = {"low", "medium", "high"}
+
+
+# Flash message helpers
+
+
+def flash(request: Request, message: str, category: str = "success"):
+    if "_messages" not in request.session:
+        request.session["_messages"] = []
+    request.session["_messages"].append({"category": category, "message": message})
+
+
+def get_flashed_messages(request: Request):
+    messages = request.session.pop("_messages", [])
+    return messages
+
+
 # Routes
 
 
-@app.route('/')
-def index():
-    conn = get_db_connection()
-    todos = conn.execute(
-        'SELECT * FROM todos ORDER BY created_at DESC').fetchall()
-    conn.close()
-    return render_template('index.html', todos=todos)
+@app.get('/')
+def index(request: Request):
+    with get_db() as conn:
+        todos = conn.execute(
+            'SELECT * FROM todos ORDER BY created_at DESC').fetchall()
+    return templates.TemplateResponse('index.html', {
+        'request': request,
+        'todos': todos,
+        'messages': get_flashed_messages(request),
+    })
 
 
-@app.route('/add', methods=['POST'])
-def add_todo():
-    task = request.form.get('task')
-    priority = request.form.get('priority', 'medium')
-
+@app.post('/add')
+def add_todo(request: Request, task: str = Form(None), priority: str = Form('medium')):
     if not task:
-        flash('Task cannot be empty!', 'error')
-        return redirect(url_for('index'))
+        flash(request, 'Task cannot be empty!', 'error')
+        return RedirectResponse(url='/', status_code=303)
 
     if len(task) > 200:
-        flash('Task is too long! Maximum 200 characters.', 'error')
-        return redirect(url_for('index'))
+        flash(request, 'Task is too long! Maximum 200 characters.', 'error')
+        return RedirectResponse(url='/', status_code=303)
 
-    conn = get_db_connection()
-    conn.execute(
-        'INSERT INTO todos (task, priority) VALUES (?, ?)', (task, priority))
-    conn.commit()
-    conn.close()
+    if priority not in VALID_PRIORITIES:
+        flash(request, 'Invalid priority!', 'error')
+        return RedirectResponse(url='/', status_code=303)
 
-    flash('Task added successfully!', 'success')
-    return redirect(url_for('index'))
-
-
-@app.route('/toggle/<int:todo_id>')
-def toggle_todo(todo_id):
-    conn = get_db_connection()
-    todo = conn.execute('SELECT * FROM todos WHERE id = ?',
-                        (todo_id,)).fetchone()
-
-    if todo:
-        new_status = not todo['completed']
-        conn.execute('UPDATE todos SET completed = ? WHERE id = ?',
-                     (new_status, todo_id))
+    with get_db() as conn:
+        conn.execute(
+            'INSERT INTO todos (task, priority) VALUES (?, ?)', (task, priority))
         conn.commit()
-        flash(f'Task {"completed" if new_status else "reopened"}!', 'success')
-    else:
-        flash('Task not found!', 'error')
 
-    conn.close()
-    return redirect(url_for('index'))
+    flash(request, 'Task added successfully!', 'success')
+    return RedirectResponse(url='/', status_code=303)
 
 
-@app.route('/delete/<int:todo_id>')
-def delete_todo(todo_id):
-    conn = get_db_connection()
-    todo = conn.execute('SELECT * FROM todos WHERE id = ?',
-                        (todo_id,)).fetchone()
+@app.post('/toggle/{todo_id}')
+def toggle_todo(request: Request, todo_id: int):
+    with get_db() as conn:
+        todo = conn.execute('SELECT * FROM todos WHERE id = ?',
+                            (todo_id,)).fetchone()
 
-    if todo:
-        conn.execute('DELETE FROM todos WHERE id = ?', (todo_id,))
-        conn.commit()
-        flash('Task deleted successfully!', 'success')
-    else:
-        flash('Task not found!', 'error')
+        if todo:
+            new_status = not todo['completed']
+            conn.execute('UPDATE todos SET completed = ? WHERE id = ?',
+                         (new_status, todo_id))
+            conn.commit()
+            flash(request, f'Task {"completed" if new_status else "reopened"}!', 'success')
+        else:
+            flash(request, 'Task not found!', 'error')
 
-    conn.close()
-    return redirect(url_for('index'))
+    return RedirectResponse(url='/', status_code=303)
 
 
-@app.route('/edit/<int:todo_id>', methods=['GET', 'POST'])
-def edit_todo(todo_id):
-    conn = get_db_connection()
-    todo = conn.execute('SELECT * FROM todos WHERE id = ?',
-                        (todo_id,)).fetchone()
+@app.post('/delete/{todo_id}')
+def delete_todo(request: Request, todo_id: int):
+    with get_db() as conn:
+        todo = conn.execute('SELECT * FROM todos WHERE id = ?',
+                            (todo_id,)).fetchone()
+
+        if todo:
+            conn.execute('DELETE FROM todos WHERE id = ?', (todo_id,))
+            conn.commit()
+            flash(request, 'Task deleted successfully!', 'success')
+        else:
+            flash(request, 'Task not found!', 'error')
+
+    return RedirectResponse(url='/', status_code=303)
+
+
+@app.get('/edit/{todo_id}')
+def edit_todo_form(request: Request, todo_id: int):
+    with get_db() as conn:
+        todo = conn.execute('SELECT * FROM todos WHERE id = ?',
+                            (todo_id,)).fetchone()
 
     if not todo:
-        flash('Task not found!', 'error')
-        return redirect(url_for('index'))
+        flash(request, 'Task not found!', 'error')
+        return RedirectResponse(url='/', status_code=303)
 
-    if request.method == 'POST':
-        new_task = request.form.get('task')
-        new_priority = request.form.get('priority')
+    return templates.TemplateResponse('edit.html', {
+        'request': request,
+        'todo': todo,
+        'messages': get_flashed_messages(request),
+    })
 
-        if not new_task:
-            flash('Task cannot be empty!', 'error')
-            return render_template('edit.html', todo=todo)
 
-        if len(new_task) > 200:
-            flash('Task is too long! Maximum 200 characters.', 'error')
-            return render_template('edit.html', todo=todo)
+@app.post('/edit/{todo_id}')
+def edit_todo(request: Request, todo_id: int, task: str = Form(None), priority: str = Form('medium')):
+    with get_db() as conn:
+        todo = conn.execute('SELECT * FROM todos WHERE id = ?',
+                            (todo_id,)).fetchone()
+
+        if not todo:
+            flash(request, 'Task not found!', 'error')
+            return RedirectResponse(url='/', status_code=303)
+
+        if not task:
+            flash(request, 'Task cannot be empty!', 'error')
+            return templates.TemplateResponse('edit.html', {
+                'request': request,
+                'todo': todo,
+                'messages': get_flashed_messages(request),
+            })
+
+        if len(task) > 200:
+            flash(request, 'Task is too long! Maximum 200 characters.', 'error')
+            return templates.TemplateResponse('edit.html', {
+                'request': request,
+                'todo': todo,
+                'messages': get_flashed_messages(request),
+            })
+
+        if priority not in VALID_PRIORITIES:
+            flash(request, 'Invalid priority!', 'error')
+            return templates.TemplateResponse('edit.html', {
+                'request': request,
+                'todo': todo,
+                'messages': get_flashed_messages(request),
+            })
 
         conn.execute('UPDATE todos SET task = ?, priority = ? WHERE id = ?',
-                     (new_task, new_priority, todo_id))
+                     (task, priority, todo_id))
         conn.commit()
-        conn.close()
 
-        flash('Task updated successfully!', 'success')
-        return redirect(url_for('index'))
-
-    conn.close()
-    return render_template('edit.html', todo=todo)
-
-# API Routes for testing
+    flash(request, 'Task updated successfully!', 'success')
+    return RedirectResponse(url='/', status_code=303)
 
 
-@app.route('/api/todos', methods=['GET'])
+# API Routes
+
+
+class TodoCreate(BaseModel):
+    task: str = Field(..., min_length=1, max_length=200)
+    priority: Literal['low', 'medium', 'high'] = 'medium'
+
+
+@app.get('/api/todos')
 def api_get_todos():
-    conn = get_db_connection()
-    todos = conn.execute(
-        'SELECT * FROM todos ORDER BY created_at DESC').fetchall()
-    conn.close()
+    with get_db() as conn:
+        todos = conn.execute(
+            'SELECT * FROM todos ORDER BY created_at DESC').fetchall()
 
-    return jsonify([{
+    return [{
         'id': todo['id'],
         'task': todo['task'],
         'completed': bool(todo['completed']),
         'created_at': todo['created_at'],
         'priority': todo['priority']
-    } for todo in todos])
+    } for todo in todos]
 
 
-@app.route('/api/todos', methods=['POST'])
-def api_add_todo():
-    data = request.get_json()
+@app.post('/api/todos', status_code=201)
+def api_add_todo(todo: TodoCreate):
+    with get_db() as conn:
+        cursor = conn.execute(
+            'INSERT INTO todos (task, priority) VALUES (?, ?)', (todo.task, todo.priority))
+        todo_id = cursor.lastrowid
+        conn.commit()
 
-    if not data or not data.get('task'):
-        return jsonify({'error': 'Task is required'}), 400
-
-    task = data['task']
-    priority = data.get('priority', 'medium')
-
-    if len(task) > 200:
-        return jsonify({'error': 'Task too long'}), 400
-
-    conn = get_db_connection()
-    cursor = conn.execute(
-        'INSERT INTO todos (task, priority) VALUES (?, ?)', (task, priority))
-    todo_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-
-    return jsonify({'id': todo_id, 'message': 'Task created successfully'}), 201
+    return {'id': todo_id, 'message': 'Task created successfully'}
 
 
-@app.route('/api/todos/<int:todo_id>', methods=['DELETE'])
-def api_delete_todo(todo_id):
-    conn = get_db_connection()
-    todo = conn.execute('SELECT * FROM todos WHERE id = ?',
-                        (todo_id,)).fetchone()
+@app.delete('/api/todos/{todo_id}')
+def api_delete_todo(todo_id: int):
+    with get_db() as conn:
+        todo = conn.execute('SELECT * FROM todos WHERE id = ?',
+                            (todo_id,)).fetchone()
 
-    if not todo:
-        conn.close()
-        return jsonify({'error': 'Task not found'}), 404
+        if not todo:
+            raise HTTPException(status_code=404, detail='Task not found')
 
-    conn.execute('DELETE FROM todos WHERE id = ?', (todo_id,))
-    conn.commit()
-    conn.close()
+        conn.execute('DELETE FROM todos WHERE id = ?', (todo_id,))
+        conn.commit()
 
-    return jsonify({'message': 'Task deleted successfully'})
+    return {'message': 'Task deleted successfully'}
 
 
-@app.route('/stats')
-def stats():
-    conn = get_db_connection()
-    total = conn.execute(
-        'SELECT COUNT(*) as count FROM todos').fetchone()['count']
-    completed = conn.execute(
-        'SELECT COUNT(*) as count FROM todos WHERE completed = 1').fetchone()['count']
-    pending = total - completed
+@app.get('/stats')
+def stats(request: Request):
+    with get_db() as conn:
+        total = conn.execute(
+            'SELECT COUNT(*) as count FROM todos').fetchone()['count']
+        completed = conn.execute(
+            'SELECT COUNT(*) as count FROM todos WHERE completed = 1').fetchone()['count']
+        pending = total - completed
 
-    priority_stats = conn.execute('''
-        SELECT priority, COUNT(*) as count 
-        FROM todos 
-        GROUP BY priority
-    ''').fetchall()
+        priority_stats = conn.execute('''
+            SELECT priority, COUNT(*) as count
+            FROM todos
+            GROUP BY priority
+        ''').fetchall()
 
-    conn.close()
-
-    return render_template('stats.html',
-                           total=total,
-                           completed=completed,
-                           pending=pending,
-                           priority_stats=priority_stats)
+    return templates.TemplateResponse('stats.html', {
+        'request': request,
+        'total': total,
+        'completed': completed,
+        'pending': pending,
+        'priority_stats': priority_stats,
+        'messages': get_flashed_messages(request),
+    })
 
 
 if __name__ == '__main__':
-    init_db()
-    app.run(debug=True)
+    import uvicorn
+    uvicorn.run(app, host='127.0.0.1', port=5000)

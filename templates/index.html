@@ -32,13 +32,17 @@
         {{ todo.task }}
     </div>
     <div class="todo-actions">
-        <a href="/toggle/{{ todo.id }}" class="btn {% if todo.completed %}btn-secondary{% else %}btn{% endif %}"
-            id="toggle-{{ todo.id }}">
-            {% if todo.completed %}Undo{% else %}Complete{% endif %}
-        </a>
+        <form method="POST" action="/toggle/{{ todo.id }}" style="display:inline">
+            <button type="submit" class="btn {% if todo.completed %}btn-secondary{% else %}btn{% endif %}"
+                id="toggle-{{ todo.id }}">
+                {% if todo.completed %}Undo{% else %}Complete{% endif %}
+            </button>
+        </form>
         <a href="/edit/{{ todo.id }}" class="btn btn-secondary" id="edit-{{ todo.id }}">Edit</a>
-        <a href="/delete/{{ todo.id }}" class="btn btn-danger" id="delete-{{ todo.id }}"
-            onclick="return confirm('Are you sure you want to delete this task?')">Delete</a>
+        <form method="POST" action="/delete/{{ todo.id }}" style="display:inline"
+            onsubmit="return confirm('Are you sure you want to delete this task?')">
+            <button type="submit" class="btn btn-danger" id="delete-{{ todo.id }}">Delete</button>
+        </form>
     </div>
 </div>
 {% endfor %}

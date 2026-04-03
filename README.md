@@ -1,1 +1,1 @@
-A simple todo list application built with Flask.
+A simple todo list application built with FastAPI
